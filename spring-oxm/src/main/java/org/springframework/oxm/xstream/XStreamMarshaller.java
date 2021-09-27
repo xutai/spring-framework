@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2020 the original author or authors.
+ * Copyright 2002-2021 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,6 +52,7 @@ import com.thoughtworks.xstream.io.HierarchicalStreamWriter;
 import com.thoughtworks.xstream.io.StreamException;
 import com.thoughtworks.xstream.io.naming.NameCoder;
 import com.thoughtworks.xstream.io.xml.CompactWriter;
+import com.thoughtworks.xstream.io.xml.DomDriver;
 import com.thoughtworks.xstream.io.xml.DomReader;
 import com.thoughtworks.xstream.io.xml.DomWriter;
 import com.thoughtworks.xstream.io.xml.QNameMap;
@@ -59,10 +60,11 @@ import com.thoughtworks.xstream.io.xml.SaxWriter;
 import com.thoughtworks.xstream.io.xml.StaxReader;
 import com.thoughtworks.xstream.io.xml.StaxWriter;
 import com.thoughtworks.xstream.io.xml.XmlFriendlyNameCoder;
-import com.thoughtworks.xstream.io.xml.XppDriver;
 import com.thoughtworks.xstream.mapper.CannotResolveClassException;
 import com.thoughtworks.xstream.mapper.Mapper;
 import com.thoughtworks.xstream.mapper.MapperWrapper;
+import com.thoughtworks.xstream.security.ForbiddenClassException;
+import com.thoughtworks.xstream.security.TypePermission;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -106,9 +108,14 @@ import org.springframework.util.xml.StaxUtils;
  * Therefore, it has limited namespace support. As such, it is rather unsuitable for
  * usage within Web Services.
  *
- * <p>This marshaller requires XStream 1.4.5 or higher, as of Spring 4.3.
+ * <p>This marshaller requires XStream 1.4.7 or higher, as of Spring 5.2.17.
  * Note that {@link XStream} construction has been reworked in 4.0, with the
  * stream driver and the class loader getting passed into XStream itself now.
+ *
+ * <p>As of Spring Framework 6.0, the default {@link HierarchicalStreamDriver} is
+ * a {@link DomDriver} that uses the configured {@linkplain #setEncoding(String)
+ * encoding} and {@link #setNameCoder(NameCoder) NameCoder}. The driver can be
+ * changed via {@link #setStreamDriver(HierarchicalStreamDriver)}.
  *
  * @author Peter Meijer
  * @author Arjen Poutsma
@@ -145,6 +152,9 @@ public class XStreamMarshaller extends AbstractMarshaller implements BeanClassLo
 
 	@Nullable
 	private ConverterMatcher[] converters;
+
+	@Nullable
+	private TypePermission[] typePermissions;
 
 	@Nullable
 	private MarshallingStrategy marshallingStrategy;
@@ -200,7 +210,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements BeanClassLo
 	}
 
 	/**
-	 * Set a XStream {@link HierarchicalStreamDriver} to be used for readers and writers.
+	 * Set an XStream {@link HierarchicalStreamDriver} to be used for readers and writers.
 	 * <p>As of Spring 4.0, this stream driver will also be passed to the {@link XStream}
 	 * constructor and therefore used by streaming-related native API methods themselves.
 	 */
@@ -211,7 +221,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements BeanClassLo
 
 	private HierarchicalStreamDriver getDefaultDriver() {
 		if (this.defaultDriver == null) {
-			this.defaultDriver = new XppDriver();
+			this.defaultDriver = new DomDriver(this.encoding, this.nameCoder);
 		}
 		return this.defaultDriver;
 	}
@@ -266,6 +276,20 @@ public class XStreamMarshaller extends AbstractMarshaller implements BeanClassLo
 	 */
 	public void setConverters(ConverterMatcher... converters) {
 		this.converters = converters;
+	}
+
+	/**
+	 * Set XStream type permissions such as
+	 * {@link com.thoughtworks.xstream.security.AnyTypePermission},
+	 * {@link com.thoughtworks.xstream.security.ExplicitTypePermission} etc,
+	 * as an alternative to overriding the {@link #customizeXStream} method.
+	 * <p>Note: As of XStream 1.4.18, the default type permissions are
+	 * restricted to well-known core JDK types. For any custom types,
+	 * explicit type permissions need to be registered.
+	 * @since 5.2.17
+	 */
+	public void setTypePermissions(TypePermission... typePermissions) {
+		this.typePermissions = typePermissions;
 	}
 
 	/**
@@ -407,7 +431,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements BeanClassLo
 
 	@Override
 	public void afterPropertiesSet() {
-		// no-op due to use of SingletonSupplier for the XStream field.
+		// no-op due to use of SingletonSupplier for the XStream field
 	}
 
 	/**
@@ -476,6 +500,12 @@ public class XStreamMarshaller extends AbstractMarshaller implements BeanClassLo
 				else {
 					throw new IllegalArgumentException("Invalid ConverterMatcher [" + this.converters[i] + "]");
 				}
+			}
+		}
+
+		if (this.typePermissions != null) {
+			for (TypePermission permission : this.typePermissions) {
+				xstream.addPermission(permission);
 			}
 		}
 
@@ -844,7 +874,7 @@ public class XStreamMarshaller extends AbstractMarshaller implements BeanClassLo
 	 */
 	protected XmlMappingException convertXStreamException(Exception ex, boolean marshalling) {
 		if (ex instanceof StreamException || ex instanceof CannotResolveClassException ||
-				ex instanceof ConversionException) {
+				ex instanceof ForbiddenClassException || ex instanceof ConversionException) {
 			if (marshalling) {
 				return new MarshallingFailureException("XStream marshalling exception",  ex);
 			}
